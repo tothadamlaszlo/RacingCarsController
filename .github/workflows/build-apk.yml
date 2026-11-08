@@ -13,10 +13,13 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Setup .NET 9
+    - name: Setup .NET 8 SDK
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '9.0.x'
+        dotnet-version: '8.0.x'
+
+    - name: Force .NET 8 SDK (Pin via global.json)
+      run: dotnet new globaljson --sdk-version 8.0.400 --roll-forward latestFeature --force
 
     - name: Install Android Workload
       run: dotnet workload install android
@@ -25,9 +28,7 @@ jobs:
       run: |
         dotnet publish RacingCarsControllerAndroid/RacingCarsControllerAndroid.csproj `
           -c Release `
-          -f net9.0-android `
-          -p:TargetPlatformVersion=35.0 `
-          -p:SupportedOSPlatformVersion=24 `
+          -f net8.0-android `
           -p:AndroidPackageFormats=apk `
           -p:AndroidKeyStore=false
 
