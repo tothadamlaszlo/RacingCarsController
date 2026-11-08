@@ -1,0 +1,36 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Install Android Workload
+      run: dotnet workload install android
+
+    - name: Build and Package APK
+      run: |
+        dotnet publish RacingCarsControllerAndroid/RacingCarsControllerAndroid.csproj `
+          -c Release `
+          -f net8.0-android `
+          -p:AndroidPackageFormats=apk `
+          -p:AndroidKeyStore=false
+
+    - name: Upload APK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ShellCar-Controller-APK
+        path: '**/bin/Release/net8.0-android/*-Signed.apk'
