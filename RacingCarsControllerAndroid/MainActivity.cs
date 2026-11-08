@@ -1,349 +1,205 @@
-using Android.Util;
-using AndroidX.RecyclerView.Widget;
-using Google.Android.Material.ProgressIndicator;
-using Google.Android.Material.Snackbar;
-using Plugin.BLE;
-using Plugin.BLE.Abstractions;
-using Plugin.BLE.Abstractions.Contracts;
-using RacingCarsController.Common;
-using Xamarin.Essentials;
+using Android.App;
+using Android.OS;
+using Android.Views;
+using Android.Widget;
+using System;
 
 namespace RacingCarsControllerAndroid
 {
-    [Activity(Label = "@string/app_name", MainLauncher = true)]
-    public class MainActivity : Activity
+    public partial class MainActivity : Activity
     {
-        private PermissionsHelpers _permissionsHelpers;
-        private Plugin.BLE.Abstractions.Contracts.IAdapter _adapter = CrossBluetoothLE.Current.Adapter;
-        private IRacingCar? _selectedCar;
-        private System.Timers.Timer _buttonStateTimer;
-        private MessageBroadcaster _messageBroadcaster;
+        // Deadzone constants to prevent stick drift
+        private const float STICK_DEADZONE = 0.20f;
+        private const float TRIGGER_DEADZONE = 0.15f;
 
-        private DeviceItemAdapter _deviceItemAdapter;
+        // Current input states
+        private bool _isSteeringLeft = false;
+        private bool _isSteeringRight = false;
+        private bool _isThrottleForward = false;
+        private bool _isThrottleReverse = false;
 
-        private LinearLayout _container;
-        private Button scanButton;
-        private LinearProgressIndicator scanProgressIndicator;
-
-        private Button disconnectButton;
-        private LinearLayout selectedCar_Layout;
-        private TextView selectedCarTextView;
-        private TextView selectedCarBatteryTextView;
-
-        bool isLightsOn = false;
-        bool isTurboOn = false;
-
-        private Button lightsButton;
-        private Button turboButton;
-        private Button buttonForward;
-        private Button buttonBackward;
-        private Button buttonLeft;
-        private Button buttonRight;
-
-
-        protected override void OnCreate(Bundle? savedInstanceState)
+        /// <summary>
+        /// Captures analog inputs: Left Stick (Steering) and Triggers (Throttle/Brake)
+        /// </summary>
+        public override bool DispatchGenericMotionEvent(MotionEvent e)
         {
-            base.OnCreate(savedInstanceState);
+            if (e != null && (e.Source.HasFlag(InputSourceType.Gamepad) || e.Source.HasFlag(InputSourceType.Joystick)))
+            {
+                // 1. Steering with Left Stick (LS) Horizontal Axis
+                float lsX = e.GetAxisValue(Axis.X);
+                HandleSteeringStick(lsX);
 
-            Xamarin.Essentials.Platform.Init(this, savedInstanceState);
-            _permissionsHelpers = new PermissionsHelpers(this);
-            _adapter.ScanMode = Plugin.BLE.Abstractions.Contracts.ScanMode.Balanced;
-            _adapter.DeviceDiscovered += OnDeviceDiscovered;
-            _buttonStateTimer = new System.Timers.Timer(TimeSpan.FromMilliseconds(50));
-            _buttonStateTimer.Elapsed += OnButtonStateTimerElapsed;
-            _messageBroadcaster = new MessageBroadcaster();
+                // 2. Analog Triggers: RT (Throttle) and LT (Reverse)
+                float rightTrigger = Math.Max(e.GetAxisValue(Axis.Rtrigger), e.GetAxisValue(Axis.Gas));
+                float leftTrigger = Math.Max(e.GetAxisValue(Axis.Ltrigger), e.GetAxisValue(Axis.Brake));
+                HandleAnalogTriggers(rightTrigger, leftTrigger);
 
-            // Set our view from the "main" layout resource
-            SetContentView(Resource.Layout.activity_main);
+                return true; // Prevents Android UI focus shifts
+            }
 
+            return base.DispatchGenericMotionEvent(e);
+        }
 
-            var mRecyclerView = FindViewById<RecyclerView>(Resource.Id.devicesList);
+        /// <summary>
+        /// Captures discrete buttons: A, B, X, Y, Bumpers, and D-Pad
+        /// </summary>
+        public override bool DispatchKeyEvent(KeyEvent e)
+        {
+            if (e != null && (e.Source.HasFlag(InputSourceType.Gamepad) || e.Source.HasFlag(InputSourceType.Joystick)))
+            {
+                bool isDown = e.Action == KeyEventActions.Down;
 
-            var mLayoutManager = new LinearLayoutManager(this);
-            mRecyclerView.SetLayoutManager(mLayoutManager);
+                switch (e.KeyCode)
+                {
+                    // Throttle Forward: Button A or Right Bumper (RB)
+                    case Keycode.ButtonA:
+                    case Keycode.ButtonR1:
+                    case Keycode.DpadUp:
+                        SetForwardState(isDown);
+                        return true;
 
-            _deviceItemAdapter = new DeviceItemAdapter();
-            mRecyclerView.SetAdapter(_deviceItemAdapter);
+                    // Reverse / Brake: Button X or Left Bumper (LB)
+                    case Keycode.ButtonX:
+                    case Keycode.ButtonL1:
+                    case Keycode.DpadDown:
+                        SetReverseState(isDown);
+                        return true;
 
-            _deviceItemAdapter.ItemClick += OnItemClick;
+                    // Steering with D-Pad
+                    case Keycode.DpadLeft:
+                        SetLeftState(isDown);
+                        return true;
+
+                    case Keycode.DpadRight:
+                        SetRightState(isDown);
+                        return true;
+
+                    // Lights Toggle: Button B
+                    case Keycode.ButtonB:
+                        if (isDown && e.RepeatCount == 0)
+                        {
+                            ToggleLights();
+                        }
+                        return true;
+
+                    // Turbo / Speed Mode: Button Y
+                    case Keycode.ButtonY:
+                        SetTurboState(isDown);
+                        return true;
+
+                    // Block Android from treating D-pad center as Enter
+                    case Keycode.DpadCenter:
+                        return true;
+                }
+            }
+
+            return base.DispatchKeyEvent(e);
+        }
+
+        #region Control Handlers
+
+        private void HandleSteeringStick(float x)
+        {
+            if (x < -STICK_DEADZONE)
+            {
+                SetLeftState(true);
+                SetRightState(false);
+            }
+            else if (x > STICK_DEADZONE)
+            {
+                SetLeftState(false);
+                SetRightState(true);
+            }
+            else
+            {
+                SetLeftState(false);
+                SetRightState(false);
+            }
+        }
+
+        private void HandleAnalogTriggers(float rt, float lt)
+        {
+            if (rt > TRIGGER_DEADZONE)
+            {
+                SetForwardState(true);
+                SetReverseState(false);
+            }
+            else if (lt > TRIGGER_DEADZONE)
+            {
+                SetForwardState(false);
+                SetReverseState(true);
+            }
+            else
+            {
+                // Only reset if buttons aren't actively holding throttle
+                if (!_isThrottleForward) SetForwardState(false);
+                if (!_isThrottleReverse) SetReverseState(false);
+            }
+        }
+
+        private void SetForwardState(bool active)
+        {
+            if (_isThrottleForward == active) return;
+            _isThrottleForward = active;
+
+            // Trigger the car's forward motion
+            // If calling the car backend instance directly:
+            // carService?.SetThrottle(active ? 100 : 0);
             
-            _container = FindViewById<LinearLayout>(Resource.Id.container);
-
-            scanButton = FindViewById<Button>(Resource.Id.buttonScan);
-            scanButton.Click += ScanButton_Click;
-            scanProgressIndicator = FindViewById<LinearProgressIndicator>(Resource.Id.scanProgressIndicator);
-
-            disconnectButton = FindViewById<Button>(Resource.Id.disconnectButton);
-            disconnectButton.Click += DisconnectButton_Click;
-
-            selectedCar_Layout = FindViewById<LinearLayout>(Resource.Id.selectedCar_Layout);
-            selectedCar_Layout.Visibility = Android.Views.ViewStates.Invisible;
-
-            lightsButton = FindViewById<Button>(Resource.Id.buttonLights);
-            lightsButton.Click += OnLightsButtonClicked;
-            turboButton = FindViewById<Button>(Resource.Id.buttonTurbo);
-            turboButton.Click += OnTurboButtonClicked;
-
-            buttonForward = FindViewById<Button>(Resource.Id.buttonForward);
-            buttonBackward = FindViewById<Button>(Resource.Id.buttonBackward);
-            buttonLeft = FindViewById<Button>(Resource.Id.buttonLeft);
-            buttonRight = FindViewById<Button>(Resource.Id.buttonRight);
-
-            buttonBackward.Click += OnControlButtonClicked;
-            buttonForward.Click += OnControlButtonClicked;
-            buttonLeft.Click += OnControlButtonClicked;
-            buttonRight.Click += OnControlButtonClicked;
-
-            selectedCarTextView = FindViewById<TextView>(Resource.Id.selectedCarName_Text);
-            selectedCarBatteryTextView = FindViewById<TextView>(Resource.Id.selectedCarBattery_Text);
+            // Or trigger the existing forward UI button:
+            SimulateButtonState(Resource.Id.button_forward, active);
         }
 
-        private void OnControlButtonClicked(object? sender, EventArgs e)
+        private void SetReverseState(bool active)
         {
-            SendCommand();
+            if (_isThrottleReverse == active) return;
+            _isThrottleReverse = active;
+
+            SimulateButtonState(Resource.Id.button_backward, active);
         }
 
-        private void OnTurboButtonClicked(object? sender, EventArgs e)
+        private void SetLeftState(bool active)
         {
-            isTurboOn = !isTurboOn;
-            turboButton.Selected = isTurboOn;
-            SendCommand();
+            if (_isSteeringLeft == active) return;
+            _isSteeringLeft = active;
+
+            SimulateButtonState(Resource.Id.button_left, active);
         }
 
-        private void OnLightsButtonClicked(object? sender, EventArgs e)
+        private void SetRightState(bool active)
         {
-            isLightsOn = !isLightsOn;
-            lightsButton.Selected = isLightsOn;
-            SendCommand();
+            if (_isSteeringRight == active) return;
+            _isSteeringRight = active;
+
+            SimulateButtonState(Resource.Id.button_right, active);
         }
 
-        private void SendCommand()
+        private void SetTurboState(bool active)
         {
-            var command = new CarCommand(
-                    buttonForward.Pressed,
-                    buttonBackward.Pressed,
-                    buttonLeft.Pressed,
-                    buttonRight.Pressed,
-                    isLightsOn,
-                    isTurboOn);
-
-            _messageBroadcaster.QueueCommand(command);
+            SimulateButtonState(Resource.Id.button_turbo, active);
         }
 
-        private async void ScanButton_Click(object? sender, EventArgs e)
+        private void ToggleLights()
         {
-            await ToggleScanAsync();
+            var btnLight = FindViewById<Button>(Resource.Id.button_light);
+            btnLight?.PerformClick();
         }
 
-        private async void DisconnectButton_Click(object? sender, EventArgs e)
+        private void SimulateButtonState(int buttonId, bool isPressed)
         {
-            await DisconnectCarAsync();
-        }
-
-        private void OnButtonStateTimerElapsed(object? sender, System.Timers.ElapsedEventArgs e)
-        {
-            SendCommand();
-        }
-
-        protected override void OnPause()
-        {
-            base.OnPause();
-            _buttonStateTimer.Stop();
-        }
-
-        protected override void OnResume()
-        {
-            base.OnResume();
-            _buttonStateTimer.Start();
-        }
-
-        private void OnDeviceDiscovered(object? sender, Plugin.BLE.Abstractions.EventArgs.DeviceEventArgs e)
-        {
-            if (!string.IsNullOrEmpty(e.Device.Name))
+            RunOnUiThread(() =>
             {
-                MainThread.BeginInvokeOnMainThread(() => _deviceItemAdapter.Add(e.Device));
-            }
-        }
+                var view = FindViewById<View>(buttonId);
+                if (view == null) return;
 
-        public override void OnRequestPermissionsResult(int requestCode, string[] permissions, Android.Content.PM.Permission[] grantResults)
-        {
-            Xamarin.Essentials.Platform.OnRequestPermissionsResult(requestCode, permissions, grantResults);
-            base.OnRequestPermissionsResult(requestCode, permissions, grantResults);
-        }
-
-        public async Task ToggleScanAsync()
-        {
-            if (_adapter.IsScanning)
-            {
-                await StopScanAsync();
-            }
-            else
-            {
-                await StartScanAsync();
-            }
-        }
-
-        public async Task StartScanAsync()
-        {
-            scanButton.Enabled = false;
-
-            var scanFilterOptions = new ScanFilterOptions();
-            try
-            {
-                var state = await _permissionsHelpers.CheckAndRequestBluetoothPermissions();
-                if (state != PermissionStatus.Granted) return;
-                if (!CrossBluetoothLE.Current.IsOn)
-                {
-                    DisplayError("Bluetooth is turned off.");
-                }
-                else
-                {
-                    _deviceItemAdapter.Clear();
-                    await _adapter.StartScanningForDevicesAsync();
-                    if (_adapter.IsScanning)
-                    {
-                        scanProgressIndicator.Visibility = Android.Views.ViewStates.Visible;
-                        scanButton.Text = "Stop scan";
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                LogMessage(ex.ToString());
-                DisplayError(ex.Message);
-            }
-            finally
-            {
-                scanButton.Enabled = true;
-            }
-        }
-
-        public async Task StopScanAsync()
-        {
-            scanButton.Enabled = false;
-            try
-            {
-                await _adapter.StopScanningForDevicesAsync();
-                scanProgressIndicator.Visibility = Android.Views.ViewStates.Invisible;
-                scanButton.Text = "Start scan";
-            }
-            catch(Exception ex)
-            {
-                LogMessage(ex.ToString());
-                DisplayError(ex.Message);
-            }
-            finally
-            {
-                scanButton.Enabled = true;
-            }
-        }
-
-        private async void OnItemClick(object? sender, int position)
-        {
-            var device = _deviceItemAdapter.Get(position);
-            await MainThread.InvokeOnMainThreadAsync(async () =>
-            {
-                await StopScanAsync();
-                await OnDeviceSelected(device);
+                long now = SystemClock.UptimeMillis();
+                var action = isPressed ? MotionEventActions.Down : MotionEventActions.Up;
+                var motionEvent = MotionEvent.Obtain(now, now, action, 0, 0, 0);
+                view.DispatchTouchEvent(motionEvent);
+                motionEvent.Recycle();
             });
         }
 
-        public async Task OnDeviceSelected(IDevice device)
-        {
-            LogMessage("Device selected");
-            if (_selectedCar != null)
-            {
-                await DisconnectCarAsync();
-            }
-
-            if (device != null)
-            {
-                _selectedCar = await ConnectDeviceAsync(device);
-                _selectedCar.BatteryLevelChanged += OnBatteryLevelChanged;
-                _messageBroadcaster.SetCar(_selectedCar);
-                selectedCar_Layout.Visibility = Android.Views.ViewStates.Visible;
-                selectedCarTextView.Text = device.Name;
-            }
-        }
-
-        public async Task<IRacingCar> ConnectDeviceAsync(IDevice device)
-        {
-            LogMessage($"ConnectDeviceAsync {device.Name}");
-            IRacingCar car = new UnknownCar();
-            try
-            {
-                if (FerrariCar.IsSupportedModel(device.Name))
-                {
-                    await _adapter.ConnectToDeviceAsync(device);
-                    car = new FerrariCar(new AndroidBLEDevice(device), new SystemDiagnosticsLogger());
-                }
-                else if (BrandbaseCar.IsSupportedModel(device.Name))
-                {
-                    await _adapter.ConnectToDeviceAsync(device);
-                    car = new BrandbaseCar(new AndroidBLEDevice(device), new SystemDiagnosticsLogger());
-                }
-            }
-            catch (Exception ex)
-            {
-                LogMessage(ex.ToString());
-                DisplayError(ex.Message);
-            }
-            await car.SubscribeToBatteryNotifications();
-            return car;
-        }
-
-        private async Task DisconnectCarAsync()
-        {
-            if (_selectedCar != null)
-            {
-                _messageBroadcaster.CancelBroadcasting();
-                LogMessage("DisconnectCarAsync");
-                _selectedCar.BatteryLevelChanged -= OnBatteryLevelChanged;
-                await _selectedCar.DisposeAsync();
-                _selectedCar = null;
-
-                selectedCar_Layout.Visibility = Android.Views.ViewStates.Invisible;
-                selectedCarTextView.Text = "";
-                selectedCarBatteryTextView.Text = "";
-            }
-        }
-
-        private void OnBatteryLevelChanged(object? sender, int level)
-        {
-            MainThread.BeginInvokeOnMainThread(() =>
-            {
-                ShowBatteryLevel(level);
-            });
-        }
-
-        private void ShowBatteryLevel(int level)
-        {
-            selectedCarBatteryTextView.Text = $"{level}%";
-            int icon = Resource.Drawable.ic_baseline_battery_full_alt_48;
-            if (level < 90 && level > 60)
-            {
-                icon = Resource.Drawable.ic_baseline_battery_horiz_075_48;
-            }
-            else if (level <=60 && level > 35)
-            {
-                icon = Resource.Drawable.ic_baseline_battery_horiz_050_48;
-            }
-            else
-            {
-                icon = Resource.Drawable.ic_baseline_battery_low_48;
-            }
-            //selectedCarBattery_Icon.Glyph = BatteryLevelToIcon(level);
-        }
-
-        public static void LogMessage(string text)
-        {
-            Log.Info("APP LOG", text);
-            System.Diagnostics.Debug.WriteLine($"APP LOG: {text}");
-        }
-
-        private void DisplayError(string text)
-        {
-            Snackbar.Make(_container, $"Error: {text}", Snackbar.LengthLong).Show();
-        }
+        #endregion
     }
 }
