@@ -4,7 +4,9 @@ Param(
     $newVersionName,
     [Parameter(Mandatory=$true)]
     [string]
-    $signingKeyPass
+    $signingKeyPass,
+    [string]
+    $outputDirectory = (Join-Path $PSScriptRoot 'artifacts')
 )
 
 Function ChangeVersion {
@@ -14,20 +16,17 @@ Function ChangeVersion {
         $newVersionName
     )
 
-    # Get current version code and increment
-    $manifestPath = Resolve-Path '.\RacingCarsControllerAndroid\AndroidManifest.xml'
-    [xml]$manifest = Get-Content -Path $manifestPath
-    $newVersionCode = ([int]$manifest.manifest.versionCode + 1).ToString()
+    $csprojPath = Join-Path $PSScriptRoot 'RacingCarsControllerAndroid/RacingCarsControllerAndroid.csproj'
+    $projectContent = Get-Content -Path $csprojPath -Raw
+    $versionMatch = [regex]::Match($projectContent, '<ApplicationVersion>(\d+)</ApplicationVersion>')
+    if (-not $versionMatch.Success) {
+        throw 'Could not find ApplicationVersion in the Android project.'
+    }
 
-    $csprojPath = Resolve-Path '.\RacingCarsControllerAndroid\RacingCarsControllerAndroid.csproj'
-
-    # Update manifest
-    (Get-Content $manifestPath) -Replace 'android:versionCode="\d+"', "android:versionCode=`"${newVersionCode}`"" | Set-Content $manifestPath
-    (Get-Content $manifestPath) -Replace 'android:versionName="[\w\d.-]+"', "android:versionName=`"$newVersionName`"" | Set-Content $manifestPath
-
-    # Update project
-    (Get-Content $csprojPath) -Replace '<ApplicationVersion>\d+</ApplicationVersion>', "<ApplicationVersion>$newVersionCode</ApplicationVersion>" | Set-Content $csprojPath
-    (Get-Content $csprojPath) -Replace '<ApplicationDisplayVersion>[\w\d.-]+</ApplicationDisplayVersion>', "<ApplicationDisplayVersion>$newVersionName</ApplicationDisplayVersion>" | Set-Content $csprojPath
+    $newVersionCode = ([int]$versionMatch.Groups[1].Value + 1).ToString()
+    $projectContent = [regex]::Replace($projectContent, '<ApplicationVersion>\d+</ApplicationVersion>', "<ApplicationVersion>$newVersionCode</ApplicationVersion>")
+    $projectContent = [regex]::Replace($projectContent, '<ApplicationDisplayVersion>[^<]+</ApplicationDisplayVersion>', "<ApplicationDisplayVersion>$newVersionName</ApplicationDisplayVersion>")
+    Set-Content -Path $csprojPath -Value $projectContent -NoNewline
 
     Write-Host "New versionName: $newVersionName, new versionCode: $newVersionCode"
 }
@@ -39,34 +38,42 @@ Function Build {
         $signingKeyPass
     )
 
-    dotnet publish -f:net7.0-android -c:Release /p:AndroidSigningKeyPass=$signingKeyPass /p:AndroidSigningStorePass=$signingKeyPass
+    $projectPath = Join-Path $PSScriptRoot 'RacingCarsControllerAndroid/RacingCarsControllerAndroid.csproj'
+    dotnet publish $projectPath -f:net9.0-android -c:Release `
+        -p:AndroidPackageFormats=apk `
+        "-p:AndroidSigningKeyPass=$signingKeyPass" `
+        "-p:AndroidSigningStorePass=$signingKeyPass"
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Android APK build failed.'
+    }
 }
 
-Function CopyToLocalAppStore {
+Function CopyPublishedApks {
     Param(
         [Parameter(Mandatory=$true)]
         [string]
-        $versionName
+        $versionName,
+        [Parameter(Mandatory=$true)]
+        [string]
+        $outputDirectory
     )
 
-    $publishDirectory = '.\RacingCarsControllerAndroid\bin\Release\net7.0-android\publish'
-    $appStoreDirectory = 'C:\Source\AppStore'
+    $publishDirectory = Join-Path $PSScriptRoot 'RacingCarsControllerAndroid/bin/Release/net9.0-android/publish'
     $appName = 'RacingCarsController'
+    $apks = Get-ChildItem -Path $publishDirectory -Filter '*-Signed.apk' -File
+    if (-not $apks) {
+        throw "No signed APKs were found in $publishDirectory."
+    }
+    New-Item -Path $outputDirectory -ItemType Directory -Force | Out-Null
 
-    $package = 'com.tmk907.RacingCarsControllerAndroid'
-    $architectures = @('arm64-v8a','armeabi-v7a','x86_64')
-
-    foreach($arch in $architectures){
-        $apkName = "$package-$arch-Signed.apk"
-        $publishedApkName = "$appName-v$versionName-$arch.apk"
-
-        Copy-Item -Path "$publishDirectory\$apkName" -Destination "$appStoreDirectory\$publishedApkName"
-        Write-Host "$publishedApkName copied to  $appStoreDirectory"
+    foreach ($apk in $apks) {
+        $architecture = [IO.Path]::GetFileNameWithoutExtension($apk.Name) -replace '^com\.tmk907\.RacingCarsControllerAndroid-', '' -replace '-Signed$', ''
+        $publishedApkName = "$appName-v$versionName-$architecture.apk"
+        Copy-Item -Path $apk.FullName -Destination (Join-Path $outputDirectory $publishedApkName)
+        Write-Host "$publishedApkName copied to $outputDirectory"
     }
 }
 
 ChangeVersion -newVersionName $newVersionName
-
 Build -signingKeyPass $signingKeyPass
-
-CopyToLocalAppStore -versionName $newVersionName
+CopyPublishedApks -versionName $newVersionName -outputDirectory $outputDirectory

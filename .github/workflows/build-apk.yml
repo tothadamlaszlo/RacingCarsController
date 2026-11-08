@@ -24,27 +24,42 @@ jobs:
       with:
         dotnet-version: '9.0.x'
 
-    - name: Pin to .NET 9 SDK
-      run: dotnet new globaljson --sdk-version 9.0.100 --roll-forward latestFeature --force
-
-    - name: Ensure TargetFramework is net9.0-android
-      shell: pwsh
-      run: |
-        $proj = "RacingCarsControllerAndroid/RacingCarsControllerAndroid.csproj"
-        if (Test-Path $proj) {
-          (Get-Content $proj) -replace 'net8\.0-android', 'net9.0-android' | Set-Content $proj
-        }
-
     - name: Install Android Workload
       run: dotnet workload install android
 
+    - name: Create temporary APK signing key
+      shell: pwsh
+      run: |
+        $keystore = Join-Path $env:RUNNER_TEMP "racingcars-build.keystore"
+        keytool -genkeypair -v `
+          -keystore $keystore `
+          -storepass android `
+          -alias racingcars `
+          -keypass android `
+          -keyalg RSA `
+          -keysize 2048 `
+          -validity 10000 `
+          -dname "CN=Racing Cars Controller"
+        if ($LASTEXITCODE -ne 0) { throw "Unable to create the APK signing key." }
+        "APK_KEYSTORE=$keystore" >> $env:GITHUB_ENV
+
     - name: Build and Package APK
+      shell: pwsh
       run: |
         dotnet publish RacingCarsControllerAndroid/RacingCarsControllerAndroid.csproj `
           -c Release `
           -f net9.0-android `
           -p:AndroidPackageFormats=apk `
-          -p:AndroidKeyStore=false
+          -p:AndroidCreatePackagePerAbi=false `
+          -p:AndroidKeyStore=true `
+          -p:AndroidSigningKeyStore="$env:APK_KEYSTORE" `
+          -p:AndroidSigningKeyAlias=racingcars `
+          -p:AndroidSigningKeyPass=android `
+          -p:AndroidSigningStorePass=android
+        if ($LASTEXITCODE -ne 0) { throw "Android APK build failed." }
+        $apks = Get-ChildItem "RacingCarsControllerAndroid/bin/Release" -Filter "*.apk" -Recurse
+        if (-not $apks) { throw "The Android build completed without producing an APK." }
+        $apks | ForEach-Object { Write-Host "APK: $($_.FullName)" }
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
