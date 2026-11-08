@@ -7,19 +7,33 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Setup .NET 8 SDK
+    - name: Setup Java (JDK 21)
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'microsoft'
+        java-version: '21'
+
+    - name: Setup .NET 9 SDK
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '8.0.x'
+        dotnet-version: '9.0.x'
 
-    - name: Force .NET 8 SDK (Pin via global.json)
-      run: dotnet new globaljson --sdk-version 8.0.400 --roll-forward latestFeature --force
+    - name: Pin to .NET 9 SDK
+      run: dotnet new globaljson --sdk-version 9.0.100 --roll-forward latestFeature --force
+
+    - name: Ensure TargetFramework is net9.0-android
+      shell: pwsh
+      run: |
+        $proj = "RacingCarsControllerAndroid/RacingCarsControllerAndroid.csproj"
+        if (Test-Path $proj) {
+          (Get-Content $proj) -replace 'net8\.0-android', 'net9.0-android' | Set-Content $proj
+        }
 
     - name: Install Android Workload
       run: dotnet workload install android
@@ -28,7 +42,7 @@ jobs:
       run: |
         dotnet publish RacingCarsControllerAndroid/RacingCarsControllerAndroid.csproj `
           -c Release `
-          -f net8.0-android `
+          -f net9.0-android `
           -p:AndroidPackageFormats=apk `
           -p:AndroidKeyStore=false
 
@@ -37,6 +51,6 @@ jobs:
       with:
         name: ShellCar-Controller-APK
         path: |
-          **/bin/Release/**/publish/*.apk
-          **/bin/Release/**/*-Signed.apk
-          **/bin/Release/**/*.apk
+          RacingCarsControllerAndroid/bin/Release/**/publish/*.apk
+          RacingCarsControllerAndroid/bin/Release/**/*-Signed.apk
+          RacingCarsControllerAndroid/bin/Release/**/*.apk
