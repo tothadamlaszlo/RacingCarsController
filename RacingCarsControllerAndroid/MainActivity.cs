@@ -1,4 +1,5 @@
 using Android.Util;
+using Android.Views;
 using AndroidX.RecyclerView.Widget;
 using Google.Android.Material.ProgressIndicator;
 using Google.Android.Material.Snackbar;
@@ -13,7 +14,7 @@ namespace RacingCarsControllerAndroid
     [Activity(Label = "@string/app_name", MainLauncher = true)]
     public class MainActivity : Activity
     {
-        private readonly IAdapter _adapter = CrossBluetoothLE.Current.Adapter;
+        private readonly Plugin.BLE.Abstractions.Contracts.IAdapter _adapter = CrossBluetoothLE.Current.Adapter;
         private PermissionsHelpers _permissionsHelpers = null!;
         private DeviceItemAdapter _deviceItemAdapter = null!;
         private MessageBroadcaster _messageBroadcaster = null!;
