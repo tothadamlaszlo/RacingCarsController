@@ -13,10 +13,10 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Setup .NET
+    - name: Setup .NET 9
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '8.0.x'
+        dotnet-version: '9.0.x'
 
     - name: Install Android Workload
       run: dotnet workload install android
@@ -25,7 +25,9 @@ jobs:
       run: |
         dotnet publish RacingCarsControllerAndroid/RacingCarsControllerAndroid.csproj `
           -c Release `
-          -f net8.0-android `
+          -f net9.0-android `
+          -p:TargetPlatformVersion=35.0 `
+          -p:SupportedOSPlatformVersion=24 `
           -p:AndroidPackageFormats=apk `
           -p:AndroidKeyStore=false
 
@@ -33,4 +35,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ShellCar-Controller-APK
-        path: '**/bin/Release/net8.0-android/*-Signed.apk'
+        path: |
+          **/bin/Release/**/publish/*.apk
+          **/bin/Release/**/*-Signed.apk
+          **/bin/Release/**/*.apk
